@@ -1,0 +1,124 @@
+x-app: &app
+  build:
+    context: .
+    dockerfile: Dockerfile
+  env_file:
+    - .env
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [backend]
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [backend]
+
+  migrate:
+    <<: *app
+    restart: "no"
+    command: ["sh", "-c", "npx prisma migrate deploy && npm run db:seed"]
+    networks: [backend]
+
+  web:
+    <<: *app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    command: ["npm", "start"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks: [backend, edge]
+
+  deposit-worker:
+    <<: *app
+    command: ["npm", "run", "worker:deposits"]
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('./node_modules/@prisma/client')\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [backend]
+
+  withdrawal-worker:
+    <<: *app
+    command: ["npm", "run", "worker:withdrawals"]
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('./node_modules/@prisma/client')\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [backend]
+
+  sweeper:
+    <<: *app
+    command: ["npm", "run", "worker:sweeper"]
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('./node_modules/@prisma/client')\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [backend]
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+    networks: [edge]
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  backend:
+  edge:

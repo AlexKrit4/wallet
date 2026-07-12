@@ -1,0 +1,220 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum KycStatus {
+  NONE
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum TxType {
+  DEPOSIT
+  WITHDRAWAL
+}
+
+enum TxStatus {
+  PENDING
+  PROCESSING
+  CONFIRMING
+  REVIEW
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum LedgerDirection {
+  CREDIT
+  DEBIT
+}
+
+enum SweepStatus {
+  PENDING
+  FUNDING_GAS
+  SWEEPING
+  COMPLETED
+  FAILED
+}
+
+model User {
+  id             String          @id @default(cuid())
+  email          String          @unique
+  passwordHash   String
+  role           Role            @default(USER)
+  kycStatus      KycStatus       @default(NONE)
+  isFrozen       Boolean         @default(false)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  kycSubmissions KycSubmission[]
+  wallet         Wallet?
+  balance        Balance?
+  transactions   Transaction[]
+  ledgerEntries  LedgerEntry[]
+  auditLogs      AuditLog[]      @relation("AuditActor")
+}
+
+model KycSubmission {
+  id             String    @id @default(cuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fullName       String
+  documentType   String
+  documentNumber String
+  country        String?
+  notes          String?
+  status         KycStatus @default(PENDING)
+  adminNote      String?
+  reviewedAt     DateTime?
+  reviewedById   String?
+  createdAt      DateTime  @default(now())
+
+  @@index([status])
+  @@index([userId])
+}
+
+model Wallet {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  address         String   @unique
+  derivationIndex Int      @unique
+  lastScannedBlock Int?
+  chain           String   @default("BSC")
+  createdAt       DateTime @default(now())
+  sweeps          Sweep[]
+}
+
+model Balance {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  asset     String   @default("USDT")
+  available Decimal  @default(0) @db.Decimal(36, 18)
+  locked    Decimal  @default(0) @db.Decimal(36, 18)
+  version   Int      @default(0)
+  updatedAt DateTime @updatedAt
+}
+
+model Transaction {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type          TxType
+  status        TxStatus @default(PENDING)
+  amount        Decimal  @db.Decimal(36, 18)
+  fee           Decimal  @default(0) @db.Decimal(36, 18)
+  netAmount     Decimal? @db.Decimal(36, 18)
+  asset         String   @default("USDT")
+  chainId       Int      @default(56)
+  txHash        String?
+  broadcastHashes String[] @default([])
+  logIndex      Int?
+  blockNumber   Int?
+  blockHash     String?
+  rawTransaction String?
+  nonce           Int?
+  lastBroadcastAt DateTime?
+  fromAddress   String?
+  toAddress     String?
+  confirmations Int      @default(0)
+  failureReason String?
+  attempts      Int      @default(0)
+  processingAt  DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  ledgerEntries LedgerEntry[]
+
+  @@index([userId, createdAt])
+  @@index([status, type])
+  @@unique([chainId, txHash, logIndex])
+}
+
+model ChainCursor {
+  id        String   @id @default("bsc-usdt")
+  lastBlock Int
+  blockHash String?
+  updatedAt DateTime @updatedAt
+}
+
+model KeyCounter {
+  id        String   @id @default("bsc-deposit")
+  nextIndex Int      @default(0)
+  updatedAt DateTime @updatedAt
+}
+
+model ChainCheckpoint {
+  id          String   @id @default(cuid())
+  cursorId    String
+  blockNumber Int
+  blockHash   String
+  createdAt   DateTime @default(now())
+
+  @@unique([cursorId, blockNumber])
+  @@index([cursorId, blockNumber])
+}
+
+model LedgerEntry {
+  id            String          @id @default(cuid())
+  userId        String
+  user          User            @relation(fields: [userId], references: [id], onDelete: Restrict)
+  transactionId String?
+  transaction   Transaction?    @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  direction     LedgerDirection
+  account       String
+  amount        Decimal         @db.Decimal(36, 18)
+  asset         String          @default("USDT")
+  reference     String          @unique
+  createdAt     DateTime        @default(now())
+
+  @@index([userId, createdAt])
+  @@index([transactionId])
+}
+
+model Sweep {
+  id             String      @id @default(cuid())
+  walletId       String
+  wallet         Wallet      @relation(fields: [walletId], references: [id], onDelete: Restrict)
+  status         SweepStatus @default(PENDING)
+  amount         Decimal     @db.Decimal(36, 18)
+  gasFundingHash String?
+  sweepTxHash    String?     @unique
+  attempts       Int         @default(0)
+  failureReason  String?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@index([status, createdAt])
+}
+
+model WorkerHeartbeat {
+  name       String   @id
+  status     String
+  lastSeenAt DateTime @default(now())
+  metadata   Json?
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  actor     User?    @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  action    String
+  target    String?
+  ip        String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([actorId, createdAt])
+  @@index([action, createdAt])
+}
